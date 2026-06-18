@@ -3,7 +3,7 @@ import os
 
 # ===== ТОКЕН TELEGRAM =====
 # Получить у @BotFather
-BOT_TOKEN = "8868608427:AAFQKBRuFEuFKN6bhLlz8Vf_Qz7Zdry9ETI"
+BOT_TOKEN = "123"
 
 # ===== ТВОЙ ID (АДМИН) =====
 # Узнай у бота @userinfobot
