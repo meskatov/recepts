@@ -23,7 +23,6 @@ def init_db():
         user_id INTEGER,
         query TEXT,
         response TEXT,
-        image_url TEXT,
         timestamp TEXT
     )''')
     c.execute('''CREATE TABLE IF NOT EXISTS admin_logs (
@@ -49,13 +48,21 @@ def log_action(user_id, action):
         f.write(f"{datetime.now().isoformat()} | USER {user_id} | {action}\n")
 
 def is_admin(user_id):
-    return user_id == ADMIN_USER_ID
+    # Проверяем по списку админов из файла
+    if user_id == ADMIN_USER_ID:
+        return True
+    # Проверяем в файле admins.txt
+    if os.path.exists("admins.txt"):
+        with open("admins.txt", "r") as f:
+            admins = [int(line.strip()) for line in f.readlines() if line.strip()]
+            return user_id in admins
+    return False
 
-def save_user_history(user_id, query, response, image_url):
+def save_user_history(user_id, query, response):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("INSERT INTO requests (user_id, query, response, image_url, timestamp) VALUES (?, ?, ?, ?, ?)",
-              (user_id, query, response, image_url, datetime.now().isoformat()))
+    c.execute("INSERT INTO requests (user_id, query, response, timestamp) VALUES (?, ?, ?, ?)",
+              (user_id, query, response, datetime.now().isoformat()))
     conn.commit()
     conn.close()
     
@@ -64,8 +71,6 @@ def save_user_history(user_id, query, response, image_url):
         f.write(f"--- {datetime.now().isoformat()} ---\n")
         f.write(f"Запрос: {query}\n")
         f.write(f"Ответ: {response[:300]}...\n")
-        if image_url:
-            f.write(f"Картинка: {image_url}\n")
         f.write("\n")
 
 def get_user_history(user_id):
@@ -113,13 +118,16 @@ def delete_user(user_id):
     c = conn.cursor()
     c.execute("DELETE FROM users WHERE user_id=?", (user_id,))
     c.execute("DELETE FROM requests WHERE user_id=?", (user_id,))
-    # Удаляем файл истории
     filename = os.path.join(HISTORY_DIR, f"user_{user_id}.txt")
     if os.path.exists(filename):
         os.remove(filename)
     conn.commit()
     conn.close()
     log_action(ADMIN_USER_ID, f"Удалён пользователь {user_id}")
+
+def add_admin(user_id):
+    with open("admins.txt", "a", encoding="utf-8") as f:
+        f.write(f"{user_id}\n")
 
 # ==================== ПОИСК РЕЦЕПТА ====================
 def get_recipe_from_ai(query):
@@ -143,17 +151,6 @@ def get_recipe_from_ai(query):
         return result['choices'][0]['message']['content']
     except Exception as e:
         print(f"AI error: {e}")
-        return None
-
-def get_recipe_image(query):
-    url = f"https://api.unsplash.com/photos/random?query={query}&orientation=landscape&w=800"
-    headers = {"Authorization": f"Client-ID {UNSPLASH_ACCESS_KEY}"}
-    try:
-        resp = requests.get(url, headers=headers, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-        return data['urls']['regular']
-    except:
         return None
 
 # ==================== КЛАВИАТУРЫ ====================
@@ -196,7 +193,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "◆ *Добро пожаловать в Рецепт-Бот*\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
-        "▸ Найду любой рецепт с картинкой\n"
+        "▸ Найду любой рецепт\n"
         "▸ Сохраню историю запросов\n"
         "▸ Полное управление для админа\n\n"
         "Выбери действие:",
@@ -436,23 +433,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         
-        image_url = get_recipe_image(text)
-        save_user_history(user_id, text, recipe, image_url)
+        save_user_history(user_id, text, recipe)
         log_action(user_id, f"Поиск: {text}")
         
-        if image_url:
-            await update.message.reply_photo(
-                photo=image_url,
-                caption=f"▸ *{text.capitalize()}*\n━━━━━━━━━━━━━━━━━━━━━\n\n{recipe}",
-                reply_markup=main_menu(),
-                parse_mode="Markdown"
-            )
-        else:
-            await update.message.reply_text(
-                f"▸ *{text.capitalize()}*\n━━━━━━━━━━━━━━━━━━━━━\n\n{recipe}",
-                reply_markup=main_menu(),
-                parse_mode="Markdown"
-            )
+        await update.message.reply_text(
+            f"▸ *{text.capitalize()}*\n━━━━━━━━━━━━━━━━━━━━━\n\n{recipe}",
+            reply_markup=main_menu(),
+            parse_mode="Markdown"
+        )
     
     # Проверка истории
     elif context.user_data.get('awaiting_check', False):
@@ -486,20 +474,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
     
-    # Добавление админа (сохраняем в отдельный файл)
+    # Добавление админа
     elif context.user_data.get('awaiting_add_admin', False):
         context.user_data['awaiting_add_admin'] = False
         
         try:
             new_admin_id = int(text.strip())
-            # Сохраняем в файл админов
-            with open("admins.txt", "a", encoding="utf-8") as f:
-                f.write(f"{new_admin_id}\n")
+            add_admin(new_admin_id)
             
             await update.message.reply_text(
                 f"⊞ *Админ добавлен*\n━━━━━━━━━━━━━━━━━━━━━\n"
-                f"Пользователь `{new_admin_id}` получил права админа.\n"
-                f"Перезапусти бота для применения.",
+                f"Пользователь `{new_admin_id}` получил права админа.",
                 reply_markup=admin_menu(),
                 parse_mode="Markdown"
             )
